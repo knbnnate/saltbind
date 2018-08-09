@@ -1,0 +1,18 @@
+$ORIGIN {{ reverse_zone }}.in-addr.arpa.
+@	IN	SOA	@	hostmaster.local. (
+					{{ None|strftime("%Y%m%d%H") }}	; serial
+					30M	; refresh
+					1H	; retry
+					2H	; expire
+					30 )	; minimum
+{% set zone = salt['pillar.get']('saltbind:views:{0}:zone'.format(view),[]) -%}
+{% set nameservers = salt['pillar.get']('saltbind:views:{0}:nameservers'.format(view),[]) -%}
+{% for nameserver in nameservers -%}
+@        IN      NS      {{ nameserver }}.{{ zone }}.
+{% endfor -%}
+{%- set public_routes = salt['mine.get']('*','public_route') -%}
+{%- set ip_db = salt['ip_db.manifest'](public_routes) -%}
+{%- set reverse_zone_members = salt['ip_db.manifest_reverse_zone_members'](ip_db,reverse_zone) -%}
+{% for member in reverse_zone_members -%}
+{{ member["reverse_entry"] }}	IN	PTR	{{ member["hostname"] }}.{{ zone }}.
+{% endfor %}

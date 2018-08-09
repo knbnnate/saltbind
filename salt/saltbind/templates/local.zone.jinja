@@ -1,0 +1,15 @@
+$ORIGIN local.
+@	IN	SOA	@	hostmaster.local. (
+					{{ None|strftime("%Y%m%d%H") }}	; serial
+					1H	; refresh
+					1H	; retry
+					1D	; expire
+					5M )	; minimum
+
+{% set zone = salt['pillar.get']('saltbind:views:{0}:zone'.format(view),[]) %}
+{% for nameserver in salt['pillar.get']('saltbind:views:{0}:nameservers'.format(view),[]) %}
+local.	IN	NS	{{ nameserver }}.{{ zone }}.
+; Stub Zones Delegation
+; Zone: {{ zone }}.
+{{ zone }}.	IN	NS	{{ nameserver }}.{{ zone }}.
+{% endfor %}

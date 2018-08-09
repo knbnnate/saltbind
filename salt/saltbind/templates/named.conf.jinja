@@ -1,0 +1,154 @@
+
+{%- set public_routes = salt['mine.get']('*','public_route') -%}
+{%- set ip_db = salt['ip_db.manifest'](public_routes) -%}
+{%- set reverse_zones = salt['ip_db.manifest_reverse_zones'](ip_db) -%}
+
+/* sample pillar data to override some defaults
+
+    saltbind:
+      options:
+        dnssec-enable: yes
+        forwarders:
+          - 168.63.129.16
+
+*/
+
+options {
+  listen-on port 53     { {{ salt['pillar.get']('saltbind:options:listen-on-port-53','any') }}; };
+  listen-on-v6 port 53  { {{ salt['pillar.get']('saltbind:options:listen-on-v6-port-53','any') }}; };
+  directory              "{{ salt['pillar.get']('saltbind:options:directory','/var/named') }}";
+  dump-file              "{{ salt['pillar.get']('saltbind:options:dump-file','/var/named/data/cache_dump.db') }}";
+  statistics-file        "{{ salt['pillar.get']('saltbind:options:statistics-file','/var/named/data/named_stats.txt') }}";
+  memstatistics-file     "{{ salt['pillar.get']('saltbind:options:memstatistics-file','/var/named/data/named_mem_stats.txt') }}";
+  allow-query           { {{ salt['pillar.get']('saltbind:options:allow-query','any') }}; };
+  allow-query-cache     { {{ salt['pillar.get']('saltbind:options:allow-query-cache','any') }}; };
+  allow-transfer        { {{ salt['pillar.get']('saltbind:options:allow-transfer','any') }}; };
+  recursion               {{ salt['pillar.get']('saltbind:options:recursion','yes') }};
+  dnssec-enable           {{ salt['pillar.get']('saltbind:options:dnssec-enable','no') }};
+  dnssec-validation       {{ salt['pillar.get']('saltbind:options:dnssec-validation','no') }};
+  dnssec-lookaside        {{ salt['pillar.get']('saltbind:options:dnssec-lookaside','auto') }};
+  /* Path to ISC DLV key */
+  bindkeys-file          "{{ salt['pillar.get']('saltbind:options:bindkeys-file','/etc/named.iscdlv.key') }}";
+  managed-keys-directory "{{ salt['pillar.get']('saltbind:options:managed-keys-directory','/var/named/dynamic') }}";
+  forwarders { {% for fwd in salt['pillar.get']('saltbind:options:forwarders',['8.8.8.8','8.8.4.4']) -%} {{ fwd }}; {% endfor -%} };
+  empty-zones-enable      {{ salt['pillar.get']('saltbind:options:empty-zones-enable','no') }};
+};
+/* sample pillar data to override some defaults
+
+    saltbind:
+      logging:
+        channel: debug
+        file: data/named.run
+        severity: dynamic
+
+*/
+
+logging {
+    channel       {{ salt['pillar.get']('saltbind:logging:channel','default_debug') }} {
+        file     "{{ salt['pillar.get']('saltbind:logging:file','data/named.run') }}";
+        severity  {{ salt['pillar.get']('saltbind:logging:severity','dynamic') }};
+    };
+};
+
+/* sample pillar data to override some defaults
+
+    saltbind:
+      acls:
+        azure-internal-platform:
+          - 168.63.129.16/32
+        azure-north:
+          - '"azure-internal-platform"'
+          - 10.20.30.0/27
+*/
+{% for acl in salt['pillar.get']('saltbind:acls',{}).keys() %}
+acl {{ acl }} {
+  {{ salt['pillar.get']('saltbind:acls:{0}'.format(acl),[])|join(";") }};
+};
+{% endfor %}
+/* sample pillar data to override some defaults
+
+    saltbind:
+      views:
+        default:
+          acl: any
+          zone: salt.local
+          forward_zones:
+            app-production.local:
+              - 10.40.30.20
+              - 10.40.30.21
+          slave_zones:
+            app-disaster-recovery.local:
+              - 10.40.30.20
+              - 10.40.30.21
+          nameservers:
+            - dns001
+            - dns002
+        azure-north:
+          acl: azure-north
+          zone: app-azure-north.local
+          forward_zones:
+            app-production.local: # active directory servers 
+              - 10.20.30.10
+              - 10.20.30.11
+          slave_zones:
+            app-disaster-recovery.local:
+              - 10.20.30.20
+              - 10.20.30.21
+          nameservers:
+            - dns001
+            - dns002
+          
+*/
+
+{%- macro bindview(view, view_config) %}
+view "{{ view }}" {
+  match-clients { {{ view_config.get("acl","any") }}; };
+{% set zone = view_config.get("zone","salt.local") %}
+  zone "{{ zone }}" IN {
+    type master;
+    file "data/{{ zone }}.zone-{{ view }}-view";
+  };
+{% for reverse_zone in reverse_zones -%}
+  zone "{{ reverse_zone }}.in-addr.arpa" IN {
+    type master;
+    file "data/{{ reverse_zone }}.in-addr.arpa-{{ view }}-view";
+  };
+{% endfor -%}
+{% for forward_zone, forwarders in salt['pillar.get']('saltbind:views:{0}:forward_zones'.format(view),{}).items() -%}
+  zone "{{ forward_zone }}" IN {
+    type forward;
+    forwarders { {% for forwarder in forwarders %} {{ forwarder }}; {% endfor %}  };
+  };
+{% endfor -%}
+{% for slave_zone, masters in salt['pillar.get']('saltbind:views:{0}:slave_zones'.format(view),{}).items() -%}
+  zone "{{ slave_zone }}" IN {
+    type slave;
+    masters { {% for master in masters %} {{ master }}; {% endfor %} };
+    file "data/{{ slave_zone }}.zone-{{ view }}-view";
+    notify no;
+  };
+{% endfor -%}
+  zone "." IN {
+    type hint;
+    file "named.ca";
+  };
+  zone "local" IN {
+    type master;
+    file "data/local.zone-{{ view }}-view";
+  };
+};
+{% endmacro -%}
+
+/* Optional acl-specific views first before falling through to default view */
+{% for view in salt['pillar.get']('saltbind:views',{}).keys() %}
+{% if view != "default" %}
+{% set view_config = salt['pillar.get']('saltbind:views:{0}'.format(view),{}) %}
+{{ bindview(view, view_config) }}
+{% endif %}
+{% endfor %}
+/* Default view last, any optional more specific views should hit first */
+{% set view = "default" %}
+{% set view_config = salt['pillar.get']('saltbind:views:{0}'.format(view),{}) %}
+{{ bindview(view, view_config) }}
+
+include "/etc/named.root.key";

@@ -1,0 +1,29 @@
+$ORIGIN {{ zone }}.
+@	IN	SOA	@	hostmaster.local. (
+					{{ None|strftime("%Y%m%d%H") }}	; serial
+					30M	; refresh
+					1H	; retry
+					2H	; expire
+					30 )	; minimum
+{% set zone = salt['pillar.get']('saltbind:views:{0}:zone'.format(view),"salt.local") -%}
+{% set nameservers = salt['pillar.get']('saltbind:views:{0}:nameservers'.format(view),[]) -%}
+{% set literal_search = salt['pillar.get']('saltbind:views:{0}:alias:literal_search'.format(view),False) -%}
+{% set literal_replace = salt['pillar.get']('saltbind:views:{0}:alias:literal_replace'.format(view),False) -%}
+
+;; literal_search for {{ view }} view:  {{ literal_search|string }}
+;; literal_replace for {{ view }} view: {{ literal_replace|string }}
+
+{% for nameserver in nameservers -%}
+@        IN      NS      {{ nameserver }}.{{ zone }}.
+{% endfor -%}
+{%- set public_routes = salt['mine.get']('*','public_route') -%}
+{%- set ip_db = salt['ip_db.manifest'](public_routes) -%}
+{% for hostname in ip_db.keys() -%}
+{{ hostname }}	IN	A	{{ ip_db.get(hostname,{}).get("ip") }}
+{% if literal_search and literal_replace -%}
+{% set alias = hostname.replace(literal_search, literal_replace) -%}
+{% if alias != hostname -%}
+{{ alias }}	IN	CNAME	{{ hostname }}.{{ zone }}.
+{% endif -%}
+{% endif -%}
+{% endfor %}
